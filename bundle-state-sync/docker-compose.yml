@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bundlesync}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bundlesync}
+      POSTGRES_DB: ${POSTGRES_DB:-bundlesync}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bundlesync}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  sync-service:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bundlesync}:${POSTGRES_PASSWORD:-bundlesync}@postgres:5432/${POSTGRES_DB:-bundlesync}
+
+volumes:
+  pgdata:
