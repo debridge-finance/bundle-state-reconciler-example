@@ -35,6 +35,7 @@ class WsSubscriptionManager implements SubscriptionManager {
   private bundleToConnection = new Map<string, ManagedConnection>();
   private shutdownRequested = false;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private listenClient: pg.Client | null = null;
 
   constructor(
     private pool: pg.Pool,
@@ -165,6 +166,16 @@ class WsSubscriptionManager implements SubscriptionManager {
     this.shutdownRequested = true;
     this.stopHeartbeat();
 
+    if (this.listenClient) {
+      try {
+        await this.listenClient.query("UNLISTEN *");
+        await this.listenClient.end();
+      } catch {
+        // ignore during shutdown
+      }
+      this.listenClient = null;
+    }
+
     for (const conn of this.connections) {
       try {
         conn.ws.close(1000, "shutdown");
@@ -175,6 +186,49 @@ class WsSubscriptionManager implements SubscriptionManager {
 
     this.connections = [];
     this.bundleToConnection.clear();
+  }
+
+  // ── Postgres LISTEN for instant bundle discovery ────────────────────────
+
+  startListenForNewBundles(): void {
+    const connect = async () => {
+      if (this.shutdownRequested) return;
+
+      const client = new pg.Client({ connectionString: this.config.databaseUrl });
+      this.listenClient = client;
+
+      try {
+        await client.connect();
+        await client.query("LISTEN new_bundle");
+        logger.info("[ws-worker] LISTEN new_bundle active");
+
+        client.on("notification", (msg) => {
+          if (msg.channel === "new_bundle" && msg.payload) {
+            logger.debug(`[ws-worker] NOTIFY new_bundle: ${msg.payload}`);
+            this.subscribe([msg.payload]);
+          }
+        });
+
+        client.on("error", (err) => {
+          logger.error("[ws-worker] LISTEN client error:", err.message);
+          this.listenClient = null;
+          if (!this.shutdownRequested) {
+            setTimeout(connect, 3_000);
+          }
+        });
+      } catch (err) {
+        logger.error(
+          "[ws-worker] LISTEN connect failed:",
+          err instanceof Error ? err.message : err,
+        );
+        this.listenClient = null;
+        if (!this.shutdownRequested) {
+          setTimeout(connect, 3_000);
+        }
+      }
+    };
+
+    connect();
   }
 
   // ── Heartbeat ───────────────────────────────────────────────────────────
@@ -480,6 +534,9 @@ export async function startWebSocketWorker(
 
   // Start heartbeat
   manager.startHeartbeat();
+
+  // Listen for instant bundle notifications via Postgres LISTEN/NOTIFY
+  manager.startListenForNewBundles();
 
   // Periodic sync: subscribe to new non-terminal IDs, prune terminal ones
   const syncTimer = setInterval(async () => {

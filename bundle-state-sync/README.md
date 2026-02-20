@@ -45,6 +45,7 @@ Maintains a local PostgreSQL mirror of deBridge gasless bundle states. Three wor
 Real-time push. Subscribes to bundle updates by `bundleId` filter.
 
 - **Startup**: loads all non-terminal bundle IDs via `getNonTerminalBundleIds()` and bulk-subscribes via `subscribeBatch()`
+- **Instant subscription via LISTEN/NOTIFY**: listens on a dedicated Postgres connection for `new_bundle` notifications. When any code path inserts a bundle (injector, poller, reconciler), Postgres delivers the bundleId to Worker 1 in milliseconds, triggering an immediate WebSocket subscribe. The 30-second sync cycle remains as a fallback.
 - **Connection sharding**: max 100 subscriptions per WebSocket connection (`WS_MAX_SUBS_PER_CONNECTION`). New connections are created automatically when capacity is exhausted.
 - **Subscribe semantics**: replace — the full ID set is re-sent to the server on each subscribe call per connection
 - **Periodic sync** (every 30s): subscribes any new non-terminal IDs that appeared in the DB, prunes terminal ones
@@ -248,7 +249,7 @@ await injectBundle(response.bundleId);  // returns 'injected' | 'exists'
 await closeInjector();                  // closes the pg pool
 ```
 
-Inserts a stub row with `status = 'created'`, `first_seen_source = 'injected'`, and empty `raw_payload`. The WebSocket worker picks it up on its next 30s sync cycle and subscribes for real-time updates.
+Inserts a stub row with `status = 'created'`, `first_seen_source = 'injected'`, and empty `raw_payload`. Fires a Postgres `NOTIFY` that Worker 1 receives instantly, triggering an immediate WebSocket subscription — no need to wait for the 30-second sync cycle.
 
 ### Producer (`src/producer.ts`)
 
@@ -277,6 +278,7 @@ Reports: `pass`, `fail`, `in_progress`, or `workers_not_run`. Writes detailed re
 - **Replace subscribe semantics**: each WebSocket subscribe call sends the full set of IDs for that connection. Simpler than incremental add/remove — the server clears existing subs before applying.
 - **Exponential backoff on reconciler**: avoids hammering unchanged bundles. Check intervals grow from 60s to 15 minutes. After 15 checks, the bundle is flagged for manual review instead of consuming more API budget.
 - **Rate limit budget split**: 200 RPM for the poller (bulk pages) + 100 RPM for the reconciler (per-bundle lookups), under a 300 RPM total cap. WebSocket does not consume REST API quota.
+- **Postgres LISTEN/NOTIFY for instant subscription**: When a bundle is inserted (by injector, poller, or reconciler), Postgres notifies Worker 1 immediately. This avoids the 30-second sync delay for real-time tracking. Uses a dedicated `pg.Client` connection (not from the pool) since `LISTEN` requires a persistent connection. This is an application-level approach — the `pg_notify()` calls live in `injectBundle()` and `upsertBundle()`, not in a database trigger. Direct SQL inserts that bypass these functions will not fire notifications; the 30-second sync cycle covers those as a fallback.
 
 ## Prerequisites
 

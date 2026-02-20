@@ -59,6 +59,11 @@ export async function upsertBundle(
   ]);
 
   if (result.rowCount === 0) return "skipped";
+
+  if (result.rows[0].was_inserted) {
+    await pool.query(`SELECT pg_notify('new_bundle', $1)`, [bundleId]);
+  }
+
   return result.rows[0].was_inserted ? "inserted" : "updated";
 }
 

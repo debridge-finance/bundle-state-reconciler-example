@@ -39,6 +39,8 @@ export async function injectBundle(bundleId: string): Promise<'injected' | 'exis
     [bundleId]
   );
 
+  await p.query(`SELECT pg_notify('new_bundle', $1)`, [bundleId]);
+
   const status = result.rowCount === 1 ? 'injected' : 'exists';
   console.log(`[inject-bundle] ${status}: ${bundleId}`);
   return status;
