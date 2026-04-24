@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mockapi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mockapi}
+      POSTGRES_DB: ${POSTGRES_DB:-mockapi}
+    ports:
+      - "5433:5432"
+    volumes:
+      - mock-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mockapi}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mock-api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mockapi}:${POSTGRES_PASSWORD:-mockapi}@postgres:5432/${POSTGRES_DB:-mockapi}
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+
+volumes:
+  mock-pgdata:
